@@ -1,5 +1,8 @@
-# Hidden directories in the project root (tool workspaces, IDE state, etc.)
-/.*/
+# Personal tool state; shared agent skills and commands stay tracked.
+/.claude/settings.local.json
+/.claude/*.local.json
+/.idea/
+/.vscode/
 
 # Local env (never commit secrets / domain-specific config)
 .env
@@ -18,9 +21,15 @@ mcp/npm-debug.log*
 # Stray tool/workspace dirs anywhere in the tree
 .omc/
 
+# Private scratch notes (never tracked; publish-public.sh blocks them as a second line)
+WIP-*.md
+
 # OS + editor crumbs
 .DS_Store
 Thumbs.db
 *.swp
 *~
 tests/.phpunit.cache/
+
+# Python bytecode
+__pycache__/

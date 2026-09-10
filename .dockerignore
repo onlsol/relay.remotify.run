@@ -5,7 +5,7 @@
 # VCS + CI metadata
 .git
 .gitignore
-.gitlab-ci.yml
+.git*
 .dockerignore
 
 # Editor / OS cruft

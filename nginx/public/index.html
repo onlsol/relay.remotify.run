@@ -3,13 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>remotify.run - shell commands over HTTP, no SSH</title>
+<title>Shell commands over HTTP, no SSH</title>
 <meta name="description" content="HTTP relay for shell commands. Your LLM, CI runner, or terminal pushes a command over HTTPS; the remote machine needs only curl + bash.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='ui-monospace,monospace' font-size='15' font-weight='700' fill='white'%3E&gt;_%3C/text%3E%3C/svg%3E">
-<meta property="og:title" content="remotify.run - shell commands over HTTP">
+<meta property="og:title" content="Shell commands over HTTP, no SSH">
 <meta property="og:description" content="Push a command from your LLM, CI runner, or terminal. Your remote needs only curl + bash. No SSH, no agent.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://remotify.run/">
 <style>
   :root {
     --bg:#0a0c10;            --fg:#eaecef;            --muted:#8b919c;
@@ -203,7 +202,7 @@
         <span class="ttl">remote.example.com: supervised</span>
       </div>
       <div class="term-body">
-        <div class="line"><span class="prompt">$</span> <span class="cmd">curl -fsSL 'https://remotify.run/r/a1b2...' | bash</span></div>
+        <div class="line"><span class="prompt">$</span> <span class="cmd">curl -fsSL '<span class="relayorigin">https://relay.remotify.run</span>/r/a1b2...' | bash</span></div>
         <div class="line ok">remotify: connected [supervised] - polling for commands.</div>
         <div class="line"></div>
         <div class="line accent">&gt;&gt;&gt; df -h /</div>
@@ -238,7 +237,7 @@
       <div class="arrow">&#9654;&#9654;</div>
       <div class="node">
         <b>Relay</b>
-        <div class="name">remotify.run</div>
+        <div class="name" id="relayname"></div>
         <small>File-backed queue, 128-bit<br>session key, 3h idle TTL.<br>No DB, no worker.</small>
       </div>
       <div class="arrow">&#9664;&#9664;</div>
@@ -381,7 +380,7 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
   <section class="block" id="privacy">
     <div class="tag">Privacy &amp; transparency</div>
     <h2>Open source. Data-minimised by design.</h2>
-    <p class="kick">remotify.run is Apache-2.0 open source, so you can audit the wire protocol
+    <p class="kick">This relay is Apache-2.0 open source, so you can audit the wire protocol
       and the relay yourself. The relay is built on Datensparsamkeit (data minimisation):
       it keeps the smallest possible footprint for each session and throws it away as soon
       as it can.</p>
@@ -390,7 +389,7 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
       <li><b>No accounts, no identity.</b>Session keys are 128-bit random hex. Nothing ties a key to a person, email, or billing record.</li>
       <li><b>Ephemeral session data.</b>A per-session directory holds the pending command, pending result, and a short push history. Purged on 3h idle or explicit DELETE.</li>
       <li><b>No telemetry from the MCP.</b>The <code>remotify-mcp</code> package only talks to the relay you point it at. No analytics, no crash reporting.</li>
-      <li><b>Ready to use for free, or self-host.</b>Hit <code>remotify.run</code> directly with zero setup, or run the exact same relay on your own machine with one <code>docker compose up</code> and point MCP hosts there via <code>REMOTIFY_URL</code>.</li>
+      <li><b>Ready to use for free, or self-host.</b>Hit <code class="relayhost">relay.remotify.run</code> directly with zero setup, or run the exact same relay on your own machine with one <code>docker compose up</code> and point MCP hosts there via <code>REMOTIFY_URL</code>.</li>
     </ul>
   </section>
 
@@ -398,7 +397,7 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
     <div>
       &copy; <span id="cpyear">2026</span> <a href="https://www.online-solution.biz/" rel="noopener">Online Solution</a>
       &nbsp;&middot;&nbsp;
-      remotify.run, Apache-2.0
+      Apache-2.0
     </div>
     <div>
       <a href="https://www.npmjs.com/package/remotify-mcp" rel="noopener">remotify-mcp on npm</a>
@@ -414,6 +413,10 @@ const state = { session:null };
 
 // Keep the footer copyright year fresh without another deploy.
 $('cpyear').textContent = new Date().getFullYear();
+$('relayname').textContent = location.hostname;
+document.querySelectorAll('.relayhost').forEach(function (e) { e.textContent = location.host; });
+document.querySelectorAll('.relayorigin').forEach(function (e) { e.textContent = location.origin; });
+document.title = location.hostname + ' - ' + document.title;
 
 fetch('/api/source').then(r => r.ok ? r.json() : null).then(d => {
   if (d && d.url) { const el = $('source-link'); el.href = d.url; el.hidden = false; }

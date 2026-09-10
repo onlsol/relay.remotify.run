@@ -1,9 +1,9 @@
 {
   "name": "remotify-mcp",
-  "version": "0.4.0",
-  "description": "MCP server for remotify.run. Gives any LLM (Claude Code, Cursor, Codex, Gemini, etc.) a remote_exec tool where the remote operator approves each command and output flows back - ending the chat-to-shell copy-paste loop for log grepping, service checks, and iterative diagnostics.",
+  "version": "0.6.0",
+  "description": "MCP client for the remotify relay. Gives any LLM (Claude Code, Cursor, Codex, Gemini, etc.) a remote_exec tool where the remote operator approves each command and output flows back - ending the chat-to-shell copy-paste loop for log grepping, service checks, and iterative diagnostics.",
   "type": "module",
-  "bin": { "remotify-mcp": "./server.js" },
+  "bin": { "remotify-mcp": "server.js" },
   "main": "server.js",
   "scripts": { "test": "node --test" },
   "engines": { "node": ">=18" },
@@ -19,10 +19,10 @@
   "homepage": "https://remotify.run",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/onlsol/remotify.run.git"
+    "url": "git+https://github.com/onlsol/relay.remotify.run.git"
   },
   "bugs": {
-    "url": "https://github.com/onlsol/remotify.run/issues"
+    "url": "https://github.com/onlsol/relay.remotify.run/issues"
   },
   "license": "Apache-2.0"
 }

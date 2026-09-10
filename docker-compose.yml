@@ -4,23 +4,11 @@ services:
   api:
     build: ./php
     restart: unless-stopped
-    environment:
-      DOMAIN:          ${DOMAIN}
-      SCHEME:          ${SCHEME}
-      PUBLIC_PORT:     ${PUBLIC_PORT}
-      SESSION_TTL:     ${SESSION_TTL}
-      AUDIT_LOG:       ${AUDIT_LOG}
-      SOURCE_URL:      ${SOURCE_URL}
-      # Long-poll window (ms) each GET /cmd|/result holds a worker. Must stay
-      # comfortably below nginx PROXY_TIMEOUT (fastcgi_read_timeout).
-      LONGPOLL_MS:     ${LONGPOLL_MS}
-      # Single source of truth for the body cap: the entrypoint converts this
-      # nginx-syntax size (e.g. 25m) into the byte count PHP's zip-bomb guard
-      # uses, so the wire cap and the decoded cap can never drift apart.
-      MAX_BODY_SIZE:   ${MAX_BODY_SIZE}
-      # FPM pool ceiling. Each active session pins ~2 long-poll workers, so this
-      # bounds concurrent sessions. Raise on busy hosts, lower on tiny ones.
-      FPM_MAX_CHILDREN: ${FPM_MAX_CHILDREN}
+    # Container config comes from the rendered .env itself, not from ${VAR}
+    # interpolation: interpolation lets any same-named variable in the calling
+    # shell (e.g. a CI project variable) silently override .env. Each key is
+    # documented in .env.example.
+    env_file: .env
     volumes:
       - ./data/sessions:/var/data/sessions
     networks: [internal]
@@ -31,13 +19,7 @@ services:
     ports:
       - "${HTTP_PORT}:80"
       - "${HTTPS_PORT}:443"
-    environment:
-      DOMAIN:            ${DOMAIN}
-      NGINX_MODE:        ${NGINX_MODE}
-      RATE_LIMIT:        ${RATE_LIMIT}
-      RATE_LIMIT_BURST:  ${RATE_LIMIT_BURST}
-      PROXY_TIMEOUT:     ${PROXY_TIMEOUT}
-      MAX_BODY_SIZE:     ${MAX_BODY_SIZE}
+    env_file: .env
     volumes:
       - letsencrypt:/etc/letsencrypt
       - certbot-www:/var/www/certbot
@@ -48,10 +30,7 @@ services:
     image: certbot/certbot:latest
     profiles: ["tls"]
     restart: unless-stopped
-    environment:
-      DOMAIN:           ${DOMAIN}
-      CERTBOT_EMAIL:    ${CERTBOT_EMAIL}
-      CERTBOT_STAGING:  ${CERTBOT_STAGING}
+    env_file: .env
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -71,11 +50,16 @@ services:
           fi
         fi
         if [ ! -f "$$CERT" ]; then
-          certbot certonly --webroot -w /var/www/certbot \
+          if ! certbot certonly --webroot -w /var/www/certbot \
             -d "$$DOMAIN" \
             --email "$$CERTBOT_EMAIL" \
             --agree-tos --no-eff-email --non-interactive \
-            $$STAGING
+            $$STAGING; then
+            # Wait before the restart policy retries, or the ACME failed-validation limit trips within minutes.
+            echo "remotify-certbot: issuance failed for $$DOMAIN; retrying in 10 minutes"
+            sleep 600
+            exit 1
+          fi
         fi
         trap exit TERM
         while :; do

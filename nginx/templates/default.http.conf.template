@@ -1,5 +1,13 @@
 limit_req_zone $binary_remote_addr zone=session_create:10m rate=${RATE_LIMIT};
 
+# Access log with the session key masked out of the request line.
+map $request $request_masked {
+    "~^(?<pre>\S+\s\S*?)[a-f0-9]{32}(?<post>.*)$" "$pre<key>$post";
+    default $request;
+}
+log_format masked '$remote_addr - $remote_user [$time_local] "$request_masked" '
+                  '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+
 upstream remotify_api { server api:9000; }
 
 gzip on;
@@ -12,6 +20,7 @@ gzip_types text/plain text/css text/javascript text/x-shellscript application/js
 server {
     listen 80;
     server_name ${DOMAIN};
+    access_log /var/log/nginx/access.log masked;
 
     root /usr/share/nginx/html;
     index index.html;

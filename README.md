@@ -1,4 +1,4 @@
-# remotify.run
+# HTTP command relay
 
 Ephemeral HTTP command relay. Push a shell command from any HTTP client; have
 it run on a remote machine that has nothing installed but `curl` and `bash`.
@@ -19,7 +19,7 @@ Session keys are 128-bit random.
 ## Architecture
 
 ```
-  CLIENT                        remotify.run                     REMOTE SHELL
+  CLIENT                            RELAY                        REMOTE SHELL
   (LLM / CI / terminal)         (single vhost)                   (curl + bash)
 
    |                              |                              |
@@ -96,11 +96,13 @@ All knobs live in `.env`; nothing is hardcoded.
 | `RATE_LIMIT` | `10r/m` | Per-IP rate on `POST /api/session` (nginx `limit_req` syntax) |
 | `RATE_LIMIT_BURST` | `5` | Burst slots before 503 |
 | `PROXY_TIMEOUT` | `3600` | Max seconds either side of a pipe waits for the other end. Must comfortably exceed `LONGPOLL_MS` |
-| `MAX_BODY_SIZE` | `25m` | Single source of truth for body-size limits: nginx `client_max_body_size` on the queue endpoints, and the API derives its raw-body cap (`post_max_size`), memory limit, and its gzip zip-bomb decoded-size cap (3x this value) from it, so none of them can drift apart. `0` = unlimited at the nginx layer (PHP still keeps a finite decoded cap for safety) |
+| `MAX_BODY_SIZE` | `25m` | Single source of truth for body-size limits: nginx `client_max_body_size` on the queue endpoints, and the API derives its raw-body cap (`post_max_size`), memory limit, its gzip zip-bomb decoded-size cap (3x this value), and the runner's output-truncation cap (80% of this value) from it, so none of them can drift apart. `0` = unlimited at the nginx layer (PHP still keeps a finite decoded cap for safety) |
 | `LONGPOLL_MS` | `15000` | Long-poll window (ms) `GET /cmd-{key}` / `GET /result-{key}` hold an empty slot open before returning `204`, so listeners pick up work sub-second instead of on the next poll tick |
 | `FPM_MAX_CHILDREN` | `64` | PHP-FPM pool size. Each active session pins ~2 workers for up to `LONGPOLL_MS` at a time, so this bounds how many sessions can be live concurrently before other requests start queueing |
+| `FPM_MAX_REQUESTS` | `500` | Requests a PHP-FPM worker serves before it is recycled, so no slow leak accumulates over a long uptime. `0` = never recycle |
 | `SESSION_TTL` | `10800` | Idle TTL for a session (seconds). Every request on the key resets it; expired sessions are purged with their queue + history. |
-| `AUDIT_LOG` | `0` | `1` = log key generation to container stderr |
+| `AUDIT_LOG` | `0` | `1` = log key generation to container stderr. Independently of this, nginx's access log masks the key segment of every request line as `<key>` |
+| `SOURCE_URL` | _(empty)_ | Target of the landing page's source link and of `GET /source`. Empty hides the link |
 | `CERTBOT_EMAIL` | _(required for tls profile)_ | Contact address used when requesting certs from the ACME CA |
 | `CERTBOT_STAGING` | `0` | `1` = use the ACME staging environment (test-only certs, avoids rate limits) |
 
@@ -111,7 +113,15 @@ with no edits. A public HTTPS deploy needs `DOMAIN` set to your real hostname,
 challenge) and `HTTPS_PORT=443`.
 
 Behind your own reverse proxy? Skip the `tls` profile. Point your proxy at
-`HTTP_PORT` on localhost and terminate TLS there.
+`HTTP_PORT` on localhost and terminate TLS there. `SCHEME` and `PUBLIC_PORT`
+describe what clients see, so behind a proxy on the standard port they are
+`https` and `443` (or empty), not the internal `HTTP_PORT`.
+
+The CI deploy renders `.env` with `scripts/render-env.sh`: `.env.example`
+defaults overridden by same-named CI variables. For a non-localhost `DOMAIN`
+it refuses `SCHEME=http` unless `ALLOW_PLAIN_HTTP=1`, and when `SCHEME` is
+given without `PUBLIC_PORT` it uses the standard port of `SCHEME`, so a
+public deploy cannot silently hand out `http://DOMAIN:49180/` one-liners.
 
 ## API
 
@@ -123,8 +133,16 @@ Generate a new session. Returns:
 - `urls.cmd` / `urls.result` - queue push/pop endpoints for this session
 - `urls.runner` - base URL of the runner script; append `?mode=auto` for unattended mode
 - `urls.api` - `/api/session/<key>` for re-fetching the payload
-- `remote_quickstart` - ready-to-paste one-liner (supervised mode by default; operator can opt in to auto by appending `?mode=auto`)
+- `remote_quickstart` - ready-to-paste one-liner, supervised mode (y/N per command)
+- `remote_quickstart_auto` - the same line with `?mode=auto`, for unattended hosts; show operators both and let them pick
 - `exec` - one-liner template with a `COMMAND` placeholder for pushing from any HTTP client
+- `mcp_messages` - agent-facing message templates for the MCP client
+  (`{version, templates}`, from `php/app/mcp-messages.json`). Serving the
+  wording from the relay means prompt iterations deploy with the relay instead
+  of requiring an npm re-publish of `remotify-mcp`; clients keep baked-in
+  fallbacks, so the field is optional. Tool names/schemas/descriptions stay in
+  the npm package deliberately (host approval surface). Omitted if the file is
+  missing or invalid.
 
 ### `GET /api/session/{key}`
 Re-fetch the same payload for a known key. Touches the session (resets its idle
@@ -148,8 +166,8 @@ Recovery endpoint: drops any queued command, any queued result, and clears the
 in-flight marker, while keeping the session (key, TTL, connected listener)
 alive. Returns what it actually cleared:
 `{"reset": true, "cleared": {"cmd_queued": ..., "result_queued": ..., "cmd_was_in_flight": ...}}`.
-Rarely needed by hand — the relay self-heals a wedged in-flight marker as soon
-as the listener reconnects, and the MCP server resets stale state on its own —
+Rarely needed by hand - the relay self-heals a wedged in-flight marker as soon
+as the listener reconnects, and the MCP server resets stale state on its own -
 but useful for scripts and as an operator escape hatch.
 
 ### `DELETE /api/session/{key}`
@@ -190,8 +208,8 @@ them. `GET /result-{key}` long-polls exactly like `GET /cmd-{key}` (same
 Returns a ready-to-`bash` runner script. The remote operator runs:
 
 ```bash
-curl -fsSL 'https://remotify.run/r/KEY' | bash              # supervised
-curl -fsSL 'https://remotify.run/r/KEY?mode=auto' | bash    # auto
+curl -fsSL 'https://relay.remotify.run/r/KEY' | bash              # supervised
+curl -fsSL 'https://relay.remotify.run/r/KEY?mode=auto' | bash    # auto
 ```
 
 `supervised` previews every incoming command and waits for `y/N` (accepts `y`,
@@ -218,8 +236,35 @@ dropped or rejected outright. Result pushes are gzip-compressed when `gzip`
 is available on the remote, falling back to a plain POST when it isn't, so a
 box with only `curl` + `bash` still works.
 
+A poll answered `410` (session gone) or `426` (hostname retired) ends the
+runner with a message, because neither can be fixed by retrying. Every other
+poll failure is retried with a widening wait, 2s doubling up to 30s and reset
+by the next answered poll, so a relay that is down is not polled - and its
+error line not reprinted - every two seconds for as long as the listener is
+left running.
+
 ### `GET /api/health`
-Returns `{"ok": true, "service": "remotify.run"}`.
+Returns `{"ok": true, "service": "<DOMAIN>"}`, so a monitor can also confirm which relay answered.
+
+### Requests arriving on a retired hostname
+
+A name that still resolves here but is not `DOMAIN` is answered `426 Upgrade
+Required` on every route, carrying the current endpoint and the fix. Nothing is
+served on the old name; clients fail loudly until they are updated.
+
+`POST /api/session` and `GET /api/session/{key}` are the exception: they answer
+`200` with a session payload whose quickstart lines and `mcp_messages`
+templates carry the notice in place of a command. Clients render those and
+discard error bodies, so it is the only way the message reaches an operator.
+The payload is dead by construction - no session exists behind it, and its URLs
+use a scheme no HTTP client can open - so nothing runs.
+
+Skipped entirely when `DOMAIN=localhost`, so a local stack reached over
+`127.0.0.1` keeps working.
+
+This includes health probes: an uptime monitor that hits the relay by IP or
+by a hostname other than `DOMAIN` sees `426`, not `200`. Point monitors at
+`GET https://DOMAIN/api/health` (or send a `Host: DOMAIN` header).
 
 ## Landing page
 
@@ -284,7 +329,7 @@ Drop [`templates/AGENTS.md.example`](templates/AGENTS.md.example) into your proj
 
 ### Overriding the relay
 
-All snippets above default to `https://remotify.run`. If you self-host, add one env var:
+All snippets above default to `https://relay.remotify.run`. If you self-host, add one env var:
 ```json
 "env": { "REMOTIFY_URL": "https://remotify.example.com" }
 ```
@@ -292,7 +337,7 @@ All snippets above default to `https://remotify.run`. If you self-host, add one 
 
 ## Using it from anything else
 
-If it speaks HTTP, it can talk to remotify.run. The only API call needed to
+If it speaks HTTP, it can talk to the relay. The only API call needed to
 get started is `POST /api/session`; everything after that is an HTTP GET or
 POST against `DOMAIN` - there is no separate `pipe.` subdomain, it's all one vhost.
 

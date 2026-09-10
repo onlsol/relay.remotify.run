@@ -37,6 +37,19 @@ function cfg(bool $reset = false): array {
     return $c;
 }
 
+// Hostname the request arrived on if it is not DOMAIN, else null. A retired
+// name that still resolves here gets a loud 426 instead of service, so clients
+// on an old default fail until updated; nothing is rerouted for them.
+// Skipped for DOMAIN=localhost so local stacks reached via 127.0.0.1 work.
+function foreign_host(array $server): ?string {
+    $domain = cfg()['domain'];
+    if ($domain === 'localhost') return null;
+    $host = $server['HTTP_X_FORWARDED_HOST'] ?? $server['HTTP_HOST'] ?? '';
+    $host = strtolower(trim(explode(',', $host)[0]));
+    $host = preg_replace('/:\d+$/', '', $host);
+    return ($host === '' || $host === $domain) ? null : $host;
+}
+
 // ---------------------------------------------------------------------------
 // Response helpers.
 // ---------------------------------------------------------------------------
@@ -68,7 +81,11 @@ function session_dir(string $key): string {
 function touch_session(string $key): bool {
     $dir = session_dir($key);
     if (!is_dir($dir)) return false;
-    if ((time() - filemtime($dir)) > cfg()['session_ttl']) {
+    // A session minted under another DOMAIN (or before the marker existed) is
+    // gone: its client keeps working through the URLs it was handed and would
+    // otherwise never re-mint, never reaching the endpoint-moved notice.
+    if ((time() - filemtime($dir)) > cfg()['session_ttl']
+        || @file_get_contents("$dir/_domain") !== cfg()['domain']) {
         purge_session($key);
         return false;
     }
@@ -76,8 +93,11 @@ function touch_session(string $key): bool {
     return true;
 }
 
-function create_session(string $key): void {
-    @mkdir(session_dir($key), 0700, true);
+// False when the dir could not be created or stamped; do not hand out the key then.
+function create_session(string $key): bool {
+    $dir = session_dir($key);
+    if (!@mkdir($dir, 0700, true) && !is_dir($dir)) return false;
+    return @file_put_contents("$dir/_domain", cfg()['domain']) !== false;
 }
 
 function purge_session(string $key): void {
@@ -87,19 +107,25 @@ function purge_session(string $key): void {
     // concurrent long-poll can recreate `.lock` (fopen 'c') at any instant; if
     // that happened between an in-place unlink sweep and the final rmdir, the
     // rmdir would fail (ENOTEMPTY) and leave a zombie dir with a fresh mtime
-    // that touch_session() then treats as a live session — a runner polling a
+    // that touch_session() then treats as a live session - a runner polling a
     // "deleted" key would never receive its 410. rename() removes the key in a
     // single step: afterwards is_dir(session_dir(key)) is false and any
     // straggler fopen() targets a parent that no longer exists and just fails.
     $tomb = $dir . '.dead-' . bin2hex(random_bytes(6));
     if (@rename($dir, $tomb)) {
         $dir = $tomb;
-    } elseif (!is_dir($dir)) {
-        return; // already gone (lost the race to a concurrent purge)
+    } else {
+        // A failed rename() leaves the stat cache primed by is_dir() above.
+        clearstatcache(true, $dir);
+        if (!is_dir($dir)) return; // already gone (lost the race to a concurrent purge)
     }
-    $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
-    foreach (new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST) as $f) {
-        if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
+    try {
+        $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
+        foreach (new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST) as $f) {
+            if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
+        }
+    } catch (UnexpectedValueException) {
+        return;
     }
     @rmdir($dir);
 }
@@ -123,11 +149,17 @@ function gc_sessions(): void {
         $path = "$dir/$e";
         if (!is_dir($path)) continue;
         $isTomb = strpos($e, '.dead-') !== false;   // mid-purge leftover
+        // is_dir() above primed the stat cache; a session purged meanwhile looks live.
+        clearstatcache(true, $path);
         $m = @filemtime($path);
         if (!$isTomb && ($m === false || ($now - $m) <= $ttl)) continue;
-        $it = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS);
-        foreach (new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST) as $f) {
-            if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
+        try {
+            $it = new RecursiveDirectoryIterator($path, RecursiveDirectoryIterator::SKIP_DOTS);
+            foreach (new RecursiveIteratorIterator($it, RecursiveIteratorIterator::CHILD_FIRST) as $f) {
+                if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
+            }
+        } catch (UnexpectedValueException) {
+            continue; // purged by a concurrent request; nothing left to sweep
         }
         @rmdir($path);
     }
@@ -271,6 +303,7 @@ function read_queue_longpoll(string $key, string $slot, int $timeoutMs): ?string
     if ($timeoutMs <= 0) return read_queue($key, $slot);
     $deadline = microtime(true) + ($timeoutMs / 1000.0);
     $tickUs   = 200_000;
+    $hot      = session_dir($key) . "/$slot";
     while (true) {
         // PHP caches stat() results per-request, so without clearing them every
         // file_exists()/is_dir() below would return the value cached when this
@@ -279,8 +312,11 @@ function read_queue_longpoll(string $key, string $slot, int $timeoutMs): ?string
         // would spin here for the full timeout. Clear the cache each tick so
         // both the pickup and the bail react within ~200ms.
         clearstatcache();
-        $body = read_queue($key, $slot);
-        if ($body !== null) return $body;
+        // Presence check first, so a tick never consumes a payload that is then lost.
+        if (file_exists($hot)) {
+            $body = read_queue($key, $slot);
+            if ($body !== null) return $body;
+        }
         $remainingS = $deadline - microtime(true);
         if ($remainingS <= 0) return null;
         // Bail early if the session disappeared mid-poll (operator DELETE or
@@ -301,10 +337,22 @@ function delete_hot(string $key, string $slot): bool {
 // ---------------------------------------------------------------------------
 // Payloads.
 // ---------------------------------------------------------------------------
+
+// Agent-facing message templates for the MCP client (mcp/server.js), served on
+// the session payload. Living here means wording iterations deploy with the
+// relay instead of requiring an npm re-publish; the MCP keeps baked-in
+// fallbacks for older relays and offline failure modes, so a missing or
+// invalid file simply omits the field. Tool names/schemas/descriptions
+// deliberately stay in the npm package (host approval surface).
+function mcp_messages(): ?array {
+    $parsed = json_decode((string)@file_get_contents(__DIR__ . '/mcp-messages.json'), true);
+    return (is_array($parsed) && is_array($parsed['templates'] ?? null)) ? $parsed : null;
+}
+
 function session_payload(string $key): array {
     $c = cfg();
     $base = $c['base'];
-    return [
+    $payload = [
         'key' => $key,
         'ttl_seconds' => $c['session_ttl'],
         'urls' => [
@@ -313,9 +361,11 @@ function session_payload(string $key): array {
             'api'    => "$base/api/session/$key",
             'runner' => "$base/r/$key",
         ],
-        // Supervised is the safe default. The operator can opt in to auto by
-        // appending ?mode=auto to the URL themselves.
-        'remote_quickstart' => "curl -fsSL '$base/r/$key' | bash",
+        // Supervised is the safe default; auto runs every command unattended.
+        // Both ship as ready-to-paste lines so every client can show the
+        // operator the pair instead of expecting them to edit a URL.
+        'remote_quickstart'      => "curl -fsSL '$base/r/$key' | bash",
+        'remote_quickstart_auto' => "curl -fsSL '$base/r/$key?mode=auto' | bash",
         // Push-then-poll one-liner. Verifies the enqueue returned 201, and the
         // poll loop exits cleanly on 410 (session gone) instead of spinning
         // forever. The relay drops any stale prior result on a new cmd push, so
@@ -328,18 +378,24 @@ function session_payload(string $key): array {
                 . "410) echo 'remotify: session gone' >&2; rm -f \"\$T\"; exit 1;; "
                 . "*) sleep 1;; esac; done",
     ];
+    if (($m = mcp_messages()) !== null) {
+        $payload['mcp_messages'] = $m;
+    }
+    return $payload;
 }
 
 function runner_script(string $key, string $mode): string {
     $base = cfg()['base'];
     $modeLabel = $mode === 'auto' ? 'auto' : 'supervised';
+    // 80% of the configured wire cap, leaving room for the markers appended after it.
+    $maxOutBytes = intdiv(cfg()['max_body_bytes'] * 4, 5);
 
     // --- Header (interpolated HEREDOC) --------------------------------------
     // Runtime config + env hardening. Bash's own `$` are escaped as \$ so they
     // survive PHP interpolation; only $base/$key/$modeLabel are spliced in.
     $header = <<<BASH
 #!/usr/bin/env bash
-# remotify.run - remote-side runner (mode: $modeLabel)
+# $base remote-side runner (mode: $modeLabel)
 set -u
 BASE='$base'
 KEY='$key'
@@ -357,9 +413,10 @@ CMD_FILE=\$(mktemp -t remotify-cmd.XXXXXX 2>/dev/null) || CMD_FILE="/tmp/.remoti
 OUT_FILE=\$(mktemp -t remotify-out.XXXXXX 2>/dev/null) || OUT_FILE="/tmp/.remotify-out.\$_rand"
 
 # Cap relayed output so a giant dump is truncated (head kept, with a marker)
-# rather than lost wholesale to a relay 413 / nginx body limit. Kept safely
-# under the 25MB default wire cap so even the no-gzip raw-POST path fits.
-MAX_OUT_BYTES=20971520
+# rather than lost wholesale to a relay 413 / nginx body limit.
+MAX_OUT_BYTES=$maxOutBytes
+
+POLL_WAIT=2
 
 # gzip is optional: the remote is promised to need only curl + bash. Compress
 # result pushes when it is present, POST raw when it is not.
@@ -387,19 +444,36 @@ BASH;
 
     // --- Helpers (NOWDOC: $VAR stays verbatim for bash) ---------------------
     $helpers = <<<'BASH'
+# Sleep between failed polls, doubling POLL_WAIT up to 30s; an answered poll resets it.
+back_off() {
+  sleep "$POLL_WAIT"
+  POLL_WAIT=$((POLL_WAIT * 2))
+  [ "$POLL_WAIT" -gt 30 ] && POLL_WAIT=30
+  return 0
+}
+
 # Push the file at $1 back to the relay. gzip-compress when available, else POST
-# raw. Only transient failures (network / 5xx) are retried; a 400/413 (bad or
-# oversize body) is fatal because retrying cannot help, and a 410 means the
-# session is gone. Loud on stderr so output loss is never silent.
+# raw. The body is declared application/octet-stream: without it curl labels it
+# as a form and PHP splits the bytes on '&' at request startup, which on a large
+# gzip body trips max_input_vars and corrupts the response (a 200 instead of
+# the 201 acknowledgement). Only transient failures (network / 5xx) are
+# retried; a 400/413 (bad or oversize body) is fatal because retrying cannot
+# help, and a 410 means the session is gone. The relay acknowledges a stored
+# result with 201 and nothing else, so any other 2xx/3xx is not a confirmation:
+# the URL is answered by something that is not a healthy relay (moved endpoint,
+# DNS, proxy, or a relay whose response was corrupted). Retrying cannot turn
+# that into a 201. Loud on stderr so output loss is never silent.
 push_result() {
   local file="$1" code attempt=0
   while [ "$attempt" -lt 5 ]; do
     : > "$ERR"
     if [ "$HAVE_GZIP" = 1 ]; then
       code=$(gzip -c "$file" | curl -sS -o /dev/null -w '%{http_code}' \
-        -H 'Content-Encoding: gzip' --data-binary @- --max-time 120 "$RES_URL" 2>>"$ERR" || echo "")
+        -H 'Content-Type: application/octet-stream' -H 'Content-Encoding: gzip' \
+        --data-binary @- --max-time 120 "$RES_URL" 2>>"$ERR" || echo "")
     else
       code=$(curl -sS -o /dev/null -w '%{http_code}' \
+        -H 'Content-Type: application/octet-stream' \
         --data-binary @"$file" --max-time 120 "$RES_URL" 2>>"$ERR" || echo "")
     fi
     case "$code" in
@@ -407,6 +481,10 @@ push_result() {
       410) echo "remotify: session expired during result push; result lost" >&2; return 1 ;;
       400|413) echo "remotify: relay rejected the result (HTTP $code); not retrying" >&2
                [ -s "$ERR" ] && sed 's/^/  /' "$ERR" >&2; return 1 ;;
+      2[0-9][0-9]|3[0-9][0-9])
+               echo "remotify: result push got HTTP $code from $RES_URL; the relay confirms a stored result with 201 only" >&2
+               echo "remotify: not retrying. The push may or may not have been stored (wrong endpoint / DNS / proxy / relay error in response)" >&2
+               return 1 ;;
     esac
     echo "remotify: result push got HTTP ${code:-000} (attempt $((attempt+1))/5)" >&2
     [ -s "$ERR" ] && sed 's/^/  /' "$ERR" >&2
@@ -497,20 +575,22 @@ while :; do
   t1=$(date +%s 2>/dev/null || echo 0)
   case "$CODE" in
     200)
+      POLL_WAIT=2
       CMD=$(cat "$CMD_FILE" 2>/dev/null)
       printf '\n>>> %s\n' "$CMD"
       : > "$OUT_FILE"; ran=0; rc=0
 __APPROVAL__
+      # Truncate first: head -c keeps the head, so markers appended earlier get cut.
+      sz=$(wc -c < "$OUT_FILE" 2>/dev/null || echo 0)
+      if [ "${sz:-0}" -gt "$MAX_OUT_BYTES" ] 2>/dev/null; then
+        head -c "$MAX_OUT_BYTES" "$OUT_FILE" > "$OUT_FILE.t" 2>/dev/null && mv "$OUT_FILE.t" "$OUT_FILE"
+        printf '\n[remotify: output truncated to %d of %d bytes]\n' "$MAX_OUT_BYTES" "$sz" >> "$OUT_FILE"
+      fi
       # Surface a failing exit code (only on non-zero, so clean binary output on
       # success is never mutated) - the client otherwise cannot tell a silent
       # success from a silent failure.
       if [ "$ran" = 1 ] && [ "${rc:-0}" -ne 0 ]; then
         printf '\n[remotify: exit status %d]\n' "$rc" >> "$OUT_FILE"
-      fi
-      sz=$(wc -c < "$OUT_FILE" 2>/dev/null || echo 0)
-      if [ "${sz:-0}" -gt "$MAX_OUT_BYTES" ] 2>/dev/null; then
-        head -c "$MAX_OUT_BYTES" "$OUT_FILE" > "$OUT_FILE.t" 2>/dev/null && mv "$OUT_FILE.t" "$OUT_FILE"
-        printf '\n[remotify: output truncated to %d of %d bytes]\n' "$MAX_OUT_BYTES" "$sz" >> "$OUT_FILE"
       fi
       cat "$OUT_FILE"; echo
       CMD_RUNNING=0
@@ -520,12 +600,19 @@ __APPROVAL__
         printf '<<< FAILED to push result\n' >&2
       fi
       ;;
-    204) [ "$((t1 - t0))" -lt 2 ] && sleep 1 ;;  # relay not long-polling; pace the loop
+    204) POLL_WAIT=2; [ "$((t1 - t0))" -lt 2 ] && sleep 1 ;;  # relay not long-polling; pace the loop
     410) echo "remotify: session expired or unknown key" >&2; exit 1 ;;
-    "")  echo "remotify: poll error (network/curl)" >&2
+    # Retired hostname: it answers but serves no relay traffic; retrying cannot help.
+    426) echo "remotify: this hostname no longer serves the relay" >&2
+         [ -s "$CMD_FILE" ] && { sed 's/^/  /' "$CMD_FILE" >&2; echo >&2; }
+         echo "remotify: ask for a fresh one-liner from the endpoint named above" >&2
+         exit 1 ;;
+    # A transport fault yields "000" (curl prints -w before failing), not just "".
+    ""|000)
+         echo "remotify: poll error (network/curl)" >&2
          [ -s "$ERR" ] && sed 's/^/  /' "$ERR" >&2
-         sleep 2 ;;
-    *)   echo "remotify: poll got HTTP $CODE" >&2; sleep 2 ;;
+         back_off ;;
+    *)   echo "remotify: poll got HTTP $CODE" >&2; back_off ;;
   esac
 done
 BASH;
@@ -546,7 +633,7 @@ BASH;
 // text_out(), or an explicit exit.
 // ---------------------------------------------------------------------------
 function h_health(): never {
-    json_out(200, ['ok' => true, 'service' => 'remotify.run']);
+    json_out(200, ['ok' => true, 'service' => cfg()['domain']]);
 }
 
 function h_source_redirect(): never {
@@ -563,7 +650,10 @@ function h_source_json(): never {
 function h_session_create(): never {
     gc_sessions(); // sweep expired/abandoned sessions before minting a new one
     $key = bin2hex(random_bytes(16));
-    create_session($key);
+    if (!create_session($key)) {
+        error_log('remotify: cannot write session dir under ' . cfg()['data_dir']);
+        json_out(500, ['error' => 'session storage unavailable']);
+    }
     if (cfg()['audit_log']) {
         error_log(sprintf('remotify: session key=%s from=%s', $key, $_SERVER['REMOTE_ADDR'] ?? '-'));
     }
@@ -657,7 +747,7 @@ function h_queue_write(string $slot, string $key): never {
     }
     // A command must be non-empty. An empty (or whitespace-only) command would
     // be consumed by the listener, produce no result, and leave the phase
-    // marker stuck 'in_flight' forever — the client (and the MCP's never-give-up
+    // marker stuck 'in_flight' forever - the client (and the MCP's never-give-up
     // in-flight wait) would then block on a command no one will ever answer.
     // Results, by contrast, are legitimately empty for silent commands.
     if ($slot === 'cmd' && trim($body) === '') text_out(400, "empty command\n");
@@ -754,6 +844,43 @@ if (defined('REMOTIFY_TESTING')) return;
 
 $path   = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+if (foreign_host($_SERVER) !== null) {
+    // Session mint/fetch gets a "moved" payload instead of a bare status: old
+    // clients discard error bodies, but they adopt the templates and quickstart
+    // lines from any session payload, so this is the only way the notice
+    // reaches the operator (desktop notification, clipboard, tool text). The
+    // payload is dead by construction: no session exists, the command URLs use
+    // a scheme fetch cannot open, so every later call fails with the notice.
+    if (preg_match('#^/api/session(/[a-f0-9]{32})?$#', $path) && ($method === 'POST' || $method === 'GET')) {
+        $ep = cfg()['base'];
+        $fix = "update remotify-mcp (npx -y remotify-mcp@latest, then restart your MCP host) or set REMOTIFY_URL=$ep";
+        $line = "echo 'remotify: this endpoint moved to $ep - $fix'";
+        $dead = 'moved://' . cfg()['domain'];
+        json_out(200, [
+            'key' => bin2hex(random_bytes(16)),
+            'ttl_seconds' => 0,
+            'urls' => ['cmd' => "$dead/cmd", 'result' => "$dead/result", 'api' => "$dead/api", 'runner' => "$dead/r"],
+            'remote_quickstart' => $line,
+            'remote_quickstart_auto' => $line,
+            'exec' => $line,
+            'mcp_messages' => ['version' => 1, 'templates' => [
+                'push_unreachable' => "[endpoint-moved] This remotify-mcp talks to a retired endpoint; the relay now lives at $ep. "
+                    . "Nothing was sent and nothing can run. STOP and tell the user to $fix. Do not retry and do not fall back to ssh.",
+                'session_info_intro' => "[endpoint-moved] This remotify-mcp talks to a retired endpoint; the relay now lives at $ep. "
+                    . "There is no session here and no listener line to paste, so nothing can run. STOP and tell the user to $fix. "
+                    . "Do not retry and do not fall back to ssh.\n\n",
+                'runner_lines' => "  (no listener line: the endpoint moved to $ep - $fix)\n",
+            ]],
+        ]);
+    }
+    json_out(426, [
+        'error'    => 'endpoint moved',
+        'endpoint' => cfg()['base'],
+        'action'   => 'update remotify-mcp (npx -y remotify-mcp@latest, then restart your MCP host) '
+                    . 'or point REMOTIFY_URL at the endpoint above; nothing is served on this name',
+    ]);
+}
 
 foreach ($ROUTES as [$m, $pat, $fn]) {
     if ($m !== $method) continue;

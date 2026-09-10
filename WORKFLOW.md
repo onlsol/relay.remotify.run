@@ -3,12 +3,12 @@
 ## Glossary
 - **Client side** - whatever pushes commands: an LLM (any MCP host, any Bash-tool-capable chat model), a CI runner, a human at a terminal.
 - **Remote side** - the shell where commands actually run. Only has `curl` + `bash`.
-- **Queue** - per-session directory on remotify.run's disk holding one pending command and one pending result at a time.
+- **Queue** - per-session directory on the relay's disk holding one pending command and one pending result at a time.
 
 ## Data flow
 
 ```
-  CLIENT                        remotify.run                     REMOTE SHELL
+  CLIENT                            RELAY                        REMOTE SHELL
   (LLM / CI / terminal)         (single vhost)                   (curl + bash)
 
    |                              |                              |
@@ -89,7 +89,7 @@ The runner exports a standard "headless" env block once at the top, so every exe
 
 Sessions live under `/var/data/sessions/` inside the container, bind-mounted
 from the host - `./data/sessions` in this repo's `docker-compose.yml`, or
-e.g. `/opt/remotify.run/data/sessions` on a typical prod host. Both path
+under the deployment's `data/sessions`. Both path
 styles point at the same tree; use whichever matches where you're looking
 (host vs. inside the container).
 
@@ -110,9 +110,9 @@ The hot file (`cmd` / `result`) is hard-linked to its corresponding archive on w
 
 Everything in `<KEY>/` is removed when the session expires (`SESSION_TTL`, default 3h sliding) or on explicit `DELETE /api/session/<KEY>`.
 
-`ls -lt /opt/remotify.run/data/sessions/` - live sessions sorted by last activity.  
-`ls -lt /opt/remotify.run/data/sessions/<KEY>/` - chronological push history for one session.  
-`cat /opt/remotify.run/data/sessions/<KEY>/cmd-20260422T103015Z` - inspect any past push.
+`ls -lt data/sessions/` - live sessions sorted by last activity.  
+`ls -lt data/sessions/<KEY>/` - chronological push history for one session.  
+`cat data/sessions/<KEY>/cmd-20260422T103015Z` - inspect any past push.
 
 ## Queue semantics
 
@@ -127,7 +127,7 @@ Everything in `<KEY>/` is removed when the session expires (`SESSION_TTL`, defau
 ## Wedge recovery (dead executor)
 
 A listener that dies without its signal trap firing (kill -9, closed terminal,
-host reboot) — or whose result push permanently fails — leaves
+host reboot) - or whose result push permanently fails - leaves
 `_phase=in_flight` with no result ever coming. Historically this wedged the
 session until a human hand-posted a dummy result and reloaded the MCP. Three
 layers now clear it automatically:

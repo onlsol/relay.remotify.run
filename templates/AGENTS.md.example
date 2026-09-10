@@ -1,7 +1,7 @@
-# remotify.run - remote command execution for this project
+# Remote command execution for this project
 
 This project has a remote shell reachable via a relay at
-**https://remotify.run** (or a self-hosted instance; check this project's
+**https://relay.remotify.run** (or a self-hosted instance; check this project's
 `.env` / `docker-compose.yml` if unsure). The remote is where the project
 actually runs in staging/production; your local machine is not.
 
@@ -49,29 +49,36 @@ Use your local Bash/shell tool to hit the HTTP API directly.
 ### Once per session
 
 ```bash
-curl -s -X POST https://remotify.run/api/session
+curl -s -X POST https://relay.remotify.run/api/session
 ```
 
 The JSON response contains:
 - `key` - 32-char session key
-- `remote_quickstart` - the single line to show the user so they can paste
-  it on the remote shell. Show it to them verbatim and ask them to paste
-  it on the remote. Supervised mode is default; they can append
-  `?mode=auto` themselves for unattended operation.
+- `remote_quickstart` - supervised listener line (y/N prompt per command)
+- `remote_quickstart_auto` - the same with `?mode=auto`, runs every
+  command unattended
 
-Wait for the user to confirm they've pasted it before pushing commands.
+Show the user BOTH lines verbatim in a fenced code block and ask them to
+paste ONE on the remote shell. Make that the final message of your turn and
+stop: text written between tool calls is collapsed or hidden by most chat
+hosts, so the lines only reach the user when they are the last thing you
+output. Push commands only after the user confirms the listener is running.
+
+Never fall back to `ssh`, `scp`, or any other transport, and never try to
+start the listener yourself. The user chose remotify so that no agent gets
+shell access; the listener they paste is the only execution path.
 
 ### For every command
 
 ```bash
 # 1. enqueue the command, verifying the push actually landed
-P=$(curl -s -o /dev/null -w '%{http_code}' --data-raw 'YOUR COMMAND HERE' https://remotify.run/cmd-KEY)
+P=$(curl -s -o /dev/null -w '%{http_code}' --data-raw 'YOUR COMMAND HERE' https://relay.remotify.run/cmd-KEY)
 [ "$P" = 201 ] || { echo "remotify: push failed (HTTP $P)" >&2; exit 1; }
 
 # 2. poll for the result (listener may take time to approve)
 T=$(mktemp 2>/dev/null || echo "/tmp/remotify-exec.$$")
 while :; do
-  CODE=$(curl -s -o "$T" -w '%{http_code}' https://remotify.run/result-KEY)
+  CODE=$(curl -s -o "$T" -w '%{http_code}' https://relay.remotify.run/result-KEY)
   case "$CODE" in
     200) cat "$T"; rm -f "$T"; break ;;
     410) echo "remotify: session gone - create a new session and re-instruct the user" >&2; rm -f "$T"; exit 1 ;;
@@ -101,7 +108,7 @@ listener likely died mid-command. Reconnecting the listener heals it
 automatically; to clear it by hand instead:
 
 ```bash
-curl -s -X POST https://remotify.run/api/session/KEY/reset
+curl -s -X POST https://relay.remotify.run/api/session/KEY/reset
 ```
 
 This drops any queued command/result and clears the in-flight marker while
@@ -145,7 +152,7 @@ it isn't.
 ## Ending a session
 
 ```bash
-curl -sX DELETE https://remotify.run/api/session/KEY
+curl -sX DELETE https://relay.remotify.run/api/session/KEY
 ```
 
 Or just let it expire. Everything queued under the session is discarded.

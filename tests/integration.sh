@@ -9,7 +9,7 @@
 #
 # Run:
 #   ./tests/integration.sh                  # against local stack
-#   REMOTIFY_BASE=https://remotify.run ./tests/integration.sh   # against public
+#   REMOTIFY_BASE=https://relay.remotify.run ./tests/integration.sh   # against public
 #
 # Exit status:
 #   0 all green, 1 at least one failure.
@@ -84,6 +84,9 @@ trap cleanup EXIT
 # through the burst allowance faster than steady-state throttling refills it.
 # Bounded retry (20 attempts, 1s apart) comfortably covers the ~6s-per-token
 # refill without risking an infinite loop.
+# Runs in a $(...) subshell, so the status of the attempt that got through is
+# handed back through $SCR/code rather than a variable, for the callers that
+# assert on it.
 new_session() {
   local code i=0
   while :; do
@@ -96,6 +99,7 @@ new_session() {
     fi
     sleep 1
   done
+  printf '%s' "$code" > "$SCR/code"
   grep -oE '"key": *"[a-f0-9]+"' "$SCR/out" | head -1 | sed -E 's/.*"([a-f0-9]+)".*/\1/'
 }
 
@@ -107,14 +111,18 @@ contains '"ok": true' "$(cat "$SCR/out")" "health body says ok"
 
 # ---------------------------------------------------------------------------
 banner "session lifecycle"
-resp=$("${CURL[@]}" -o "$SCR/out" -w '%{http_code}' -X POST "$BASE/api/session")
-eq 201 "$resp" "POST /api/session -> 201"
-KEY=$(grep -oE '"key": *"[a-f0-9]+"' "$SCR/out" | head -1 | sed -E 's/.*"([a-f0-9]+)".*/\1/')
+# Mint through new_session() so a mint throttled by the per-IP limiter (a
+# back-to-back suite run drains the burst) retries instead of leaving $KEY
+# empty and cascading into unrelated failures further down.
+KEY=$(new_session)
+eq 201 "$(cat "$SCR/code")" "POST /api/session -> 201"
 SESSIONS+=("$KEY")
 eq 32 "${#KEY}" "key is 32 hex chars"
 
 payload=$(cat "$SCR/out")
 contains "\"remote_quickstart\"" "$payload"  "payload has remote_quickstart"
+contains "\"remote_quickstart_auto\"" "$payload"  "payload has remote_quickstart_auto"
+contains "?mode=auto' | bash" "$payload"  "remote_quickstart_auto is the ready-to-paste auto line"
 contains "\"urls\"" "$payload"               "payload has urls"
 # The exec recipe must use a per-process scratch file: two operators running
 # the recipe on the same host would collide on a fixed /tmp/.r path.
@@ -182,8 +190,7 @@ esac
 banner "cmd_in_flight transitions"
 # Mint a fresh session so prior tests' state doesn't leak in. The phase
 # marker is per-session, so a brand-new key starts with no phase file.
-"${CURL[@]}" -o "$SCR/out" -X POST "$BASE/api/session"
-FK=$(grep -oE '"key": *"[a-f0-9]+"' "$SCR/out" | head -1 | sed -E 's/.*"([a-f0-9]+)".*/\1/')
+FK=$(new_session)
 SESSIONS+=("$FK")
 body=$("${CURL[@]}" "$BASE/api/session/$FK/status")
 contains '"cmd_in_flight": false' "$body" "fresh: cmd_in_flight=false"
@@ -268,6 +275,30 @@ code=$("${CURL[@]}" -o /dev/null -w '%{http_code}' -X POST \
 eq 201 "$code" "POST gzip /result-{key} -> 201"
 eq "gzipped body" "$("${CURL[@]}" "$BASE/result-$KEY")" "gzip body decoded correctly"
 
+# Regression: a large gzip result pushed with curl's DEFAULT (form) content type
+# and no explicit Content-Type. PHP used to parse the compressed bytes as form
+# fields at request startup; past max_input_vars (1000 '&'-separated chunks)
+# it printed a warning into the response, the 201 header could no longer be
+# set, and the relay answered 200 for a result it had in fact stored. The relay
+# must accept it with a clean 201 and hand the exact bytes back. The body is
+# high-entropy so its gzip stream reliably carries thousands of '&' bytes; the
+# precondition is asserted so a quiet stream cannot pass the test by accident.
+head -c 2000000 /dev/urandom | base64 > "$SCR/bigtext"
+gzip -c "$SCR/bigtext" > "$SCR/bigtext.gz"
+amps=$(tr -cd '&' < "$SCR/bigtext.gz" | wc -c | tr -d ' ')
+[ "$amps" -gt 1000 ] && ok "form-typed gzip body carries >1000 '&' separators ($amps)" \
+                     || nok "form-typed gzip body carries >1000 '&' separators" "only $amps"
+code=$("${CURL[@]}" -o "$SCR/out" -w '%{http_code}' -X POST \
+      -H 'Content-Encoding: gzip' --data-binary @"$SCR/bigtext.gz" "$BASE/result-$KEY")
+eq 201 "$code" "POST large form-typed gzip /result-{key} -> 201 (no max_input_vars corruption)"
+case "$(cat "$SCR/out")" in
+  *Warning*|*'<br'*) nok "large form-typed gzip response body is clean" "PHP warning leaked into response" ;;
+  *)                 ok  "large form-typed gzip response body is clean" ;;
+esac
+"${CURL[@]}" -o "$SCR/back" "$BASE/result-$KEY"
+cmp -s "$SCR/bigtext" "$SCR/back" && ok "large form-typed gzip body round-trips byte-exact" \
+                                  || nok "large form-typed gzip body round-trips byte-exact" "bytes differ"
+
 # ---------------------------------------------------------------------------
 banner "last-wins rotation"
 "${CURL[@]}" -o /dev/null -X POST --data-raw 'first' "$BASE/cmd-$KEY"
@@ -312,16 +343,38 @@ esac
 # leftover at exit ("Operation not permitted"). The runner now mktemp's a
 # private file per process and references it through $CMD_FILE.
 contains 'CMD_FILE=' "$body" "runner declares per-process CMD_FILE"
+# A retired hostname answers 426 on every route, so nothing will ever arrive
+# there; the poll loop must stop like it does on 410. Everything that CAN
+# recover backs off instead of reprinting the same error every two seconds.
+contains '426)'                        "$body" "auto runner has a 426 branch"
+contains 'no longer serves the relay'  "$body" "auto runner names the retired hostname"
+contains 'back_off() {'                "$body" "auto runner defines the poll backoff helper"
+# The output cap follows MAX_BODY_SIZE rather than a hardcoded number, so a
+# relay configured smaller does not just collect 413s on every large result.
+# The exact derivation is pinned in the unit suite, which controls the env;
+# here we only assert the served script carries a usable number.
+mob=$(printf '%s' "$body" | sed -n 's/^MAX_OUT_BYTES=//p' | head -1)
+case "$mob" in
+  ''|*[!0-9]*) nok "runner output cap is a positive integer" "got [$mob]" ;;
+  *) [ "$mob" -gt 0 ] && ok "runner output cap is a positive integer ($mob)" \
+                      || nok "runner output cap is a positive integer" "got [$mob]" ;;
+esac
 case "$body" in
   *'/tmp/.remotify-cmd"'*) nok "runner avoids fixed /tmp/.remotify-cmd path" "found unsuffixed shared path" ;;
   *' /tmp/.remotify-cmd '*) nok "runner avoids fixed /tmp/.remotify-cmd path" "found unsuffixed shared path" ;;
   *)                       ok "runner avoids fixed /tmp/.remotify-cmd path" ;;
 esac
 
+# The push must declare its body as octet-stream so no relay (this one or an
+# older self-hosted one) ever parses a gzip result as a form.
+contains "Content-Type: application/octet-stream' -H 'Content-Encoding: gzip'" "$body" "auto runner gzip push declares octet-stream"
+contains "2[0-9][0-9]|3[0-9][0-9])"   "$body" "auto runner treats non-201 2xx/3xx as unconfirmed"
+
 sup=$("${CURL[@]}" "$BASE/r/$KEY")
 contains 'push_result()'              "$sup"  "supervised runner defines push_result helper"
 contains 'FAILED to push result'      "$sup"  "supervised runner has loud failure marker"
 contains 'session expired or unknown' "$sup"  "supervised runner exits on relay 410"
+contains "Content-Type: application/octet-stream' -H 'Content-Encoding: gzip'" "$sup" "supervised runner gzip push declares octet-stream"
 
 # ---------------------------------------------------------------------------
 banner "negative / edge cases"
@@ -492,6 +545,68 @@ kill "$LPID" 2>/dev/null || true
 wait "$LPID" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+banner "runner stops on a retired endpoint (426)"
+# A hostname other than DOMAIN answers 426 on every route, so a listener pointed
+# at it will never receive a command. It must say so and exit, not reprint the
+# same error every couple of seconds for as long as it is left running. Reaching
+# the relay by IP is exactly that case -- except on a DOMAIN=localhost stack,
+# where the check is skipped by design, so probe before asserting.
+IPBASE=$(printf '%s' "$BASE" | sed -E 's#^(http://)[^/:]+#\1127.0.0.1#')
+probe=000
+case "$BASE" in
+  http://*) probe=$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$IPBASE/api/health" 2>/dev/null || echo 000) ;;
+esac
+if [ "$probe" = "426" ]; then
+  # Session mint on the retired name answers 200 with a dead payload whose
+  # message templates carry the notice, because clients render those and throw
+  # error bodies away. Every template the MCP would otherwise render as a
+  # connect instruction has to be overridden, or the agent reads "paste ONE of
+  # these two lines" followed by the no-listener placeholder.
+  mcode=000
+  for _ in $(seq 1 20); do
+    mcode=$("${CURL[@]}" -o "$SCR/moved.json" -w '%{http_code}' -X POST "$IPBASE/api/session")
+    [ "$mcode" = "200" ] && break
+    sleep 1
+  done
+  eq 200 "$mcode" "426: session mint on the retired name serves the moved payload"
+  moved=$(cat "$SCR/moved.json")
+  contains 'moved://'             "$moved" "426: moved payload URLs use an unopenable scheme"
+  contains '"push_unreachable"'   "$moved" "426: moved payload overrides push_unreachable"
+  contains '"session_info_intro"' "$moved" "426: moved payload overrides session_info_intro"
+  contains '"runner_lines"'       "$moved" "426: moved payload overrides runner_lines"
+  case "$moved" in
+    *'"session_info_intro": "[endpoint-moved]'*) ok "426: session intro leads with the endpoint-moved notice" ;;
+    *) nok "426: session intro leads with the endpoint-moved notice" "intro not replaced" ;;
+  esac
+  case "$moved" in
+    *'paste ONE of these two lines'*) nok "426: session intro drops the paste-a-listener instruction" "still tells the user to paste a line" ;;
+    *)                                ok  "426: session intro drops the paste-a-listener instruction" ;;
+  esac
+
+  XK=$(new_session)
+  SESSIONS+=("$XK")
+  "${CURL[@]}" "$BASE/r/$XK?mode=auto" | sed "s|^BASE='.*'|BASE='$IPBASE'|" > "$SCR/moved.sh"
+  bash "$SCR/moved.sh" >"$SCR/moved.log" 2>&1 &
+  MPID=$!
+  gone=""
+  for _ in $(seq 1 20); do
+    kill -0 "$MPID" 2>/dev/null || { gone=1; break; }
+    sleep 0.3
+  done
+  kill "$MPID" 2>/dev/null || true
+  wait "$MPID" 2>/dev/null || true
+  if [ -n "$gone" ]; then
+    ok "426: listener exits instead of polling a retired endpoint forever"
+  else
+    nok "426: listener exits instead of polling a retired endpoint forever" "still running after ~6s"
+  fi
+  contains 'no longer serves the relay' "$(cat "$SCR/moved.log")" "426: listener says the hostname was retired"
+  contains "$BASE" "$(cat "$SCR/moved.log")" "426: listener prints the endpoint that replaced it"
+else
+  printf "  ${dim}skipped${reset} (%s does not answer 426; DOMAIN=localhost stack?)\n" "$IPBASE"
+fi
+
+# ---------------------------------------------------------------------------
 banner "session reset endpoint"
 RK=$(new_session)
 SESSIONS+=("$RK")
@@ -546,6 +661,22 @@ code=$("${CURL[@]}" -o "$SCR/out" -w '%{http_code}' "$BASE/result-$HK?nowait=1")
 eq 200 "$code" "self-heal: synthetic result retrievable"
 contains '[remotify: a listener connected while a previous command was still marked in-flight' \
   "$(cat "$SCR/out")" "self-heal: marker text present"
+
+# ---------------------------------------------------------------------------
+banner "mcp message templates on the session payload"
+# Relay-served wording for the MCP client: the session payload must carry the
+# templates from php/app/mcp-messages.json so wording deploys with the relay.
+# Mint through new_session(): a raw POST here trips nginx's per-IP mint rate
+# limit (503) after the many mints above; the helper retries through it and
+# leaves the successful mint body in $SCR/out for the assertions below.
+MK=$(new_session)
+SESSIONS+=("$MK")
+eq 32 "${#MK}" "templates: mint session succeeded"
+contains '"mcp_messages"' "$(cat "$SCR/out")" "templates: mcp_messages present on mint"
+contains '"version": 1' "$(cat "$SCR/out")" "templates: version field served"
+contains '{runner_lines}' "$(cat "$SCR/out")" "templates: placeholder syntax intact"
+resp=$("${CURL[@]}" "$BASE/api/session/$MK")
+contains '"mcp_messages"' "$resp" "templates: also served on session GET (preset-key path)"
 
 # ---------------------------------------------------------------------------
 banner "summary"
