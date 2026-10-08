@@ -1,8 +1,8 @@
 {
   "name": "remotify-mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "MCP server that lets AI assistants run shell commands on remote computers, with optional per-command approval, using only curl and bash on the remote computer.",
-  "mcpName": "io.github.onlsol/remotify-mcp",
+  "mcpName": "io.github.onlsol/relay-remotify-mcp",
   "type": "module",
   "bin": { "remotify-mcp": "server.js" },
   "main": "server.js",
