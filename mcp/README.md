@@ -41,6 +41,41 @@ command = "npx"
 args    = ["-y", "remotify-mcp@latest"]
 ```
 
+### OpenCode V2
+
+```bash
+opencode mcp add remotify --global -- npx -y remotify-mcp@latest
+```
+
+Requires Node.js 18+ with `npx`. `--global` registers the server for every
+project in `~/.config/opencode/opencode.jsonc`; omit it for the current project
+only. No account, API key, or global npm install is needed.
+
+Check the connection with `opencode mcp list` or `/mcps` inside OpenCode.
+Ask OpenCode to call `remote_session_info` and show both connection one-liners,
+then paste your chosen line on the remote. Supervised mode asks for approval
+before each command; auto mode executes without approval.
+
+For a self-hosted relay, add `environment` to the server entry under
+`mcp.servers` (OpenCode V2 uses `environment`, not `env`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "remotify": {
+        "type": "local",
+        "command": ["npx", "-y", "remotify-mcp@latest"],
+        "environment": {
+          "REMOTIFY_URL": "https://remotify.example.com"
+        }
+      }
+    }
+  }
+}
+```
+
 ### Cursor
 
 `~/.cursor/mcp.json` for every project, or `.cursor/mcp.json` for one:
@@ -87,7 +122,8 @@ in and you are done.
 ### Pointing at a self-hosted relay
 
 Out of the box this talks to the public relay at `https://relay.remotify.run`.
-For your own instance add one env var to whichever snippet you used:
+For your own instance add one env var to your host's configuration (see the
+OpenCode V2 example above for its `environment` field):
 
 ```json
 "env": { "REMOTIFY_URL": "https://remotify.example.com" }

@@ -258,7 +258,7 @@
       hands, the host accepts no inbound ports, or installing a full agent is overkill.</p>
 
     <ul class="uses">
-      <li><b>LLM tool calls</b>Let Claude, Cursor, Codex, or Gemini run commands on your actual server instead of pasting output back yourself.</li>
+      <li><b>LLM tool calls</b>Let Claude, Cursor, Codex, OpenCode, or Gemini run commands on your actual server instead of pasting output back yourself.</li>
       <li><b>CI post-deploy checks</b>Poke at release state on a box your runner can't SSH into.</li>
       <li><b>Admin shells behind NAT</b>Outbound HTTPS is all the remote needs - no inbound ports.</li>
       <li><b>Headless devices</b>IoT, edge gateways, rescue consoles that can dial out but not in.</li>
@@ -308,6 +308,20 @@ command = "npx"
 args    = ["-y", "remotify-mcp@latest"]</pre>
           <button class="copy" data-target="inst-codex">Copy</button>
         </div>
+      </div>
+
+      <div class="install-item">
+        <div class="label">
+          <span class="host">OpenCode V2</span>
+          <span class="path">terminal CLI</span>
+        </div>
+        <div class="code">
+          <pre id="inst-opencode">opencode mcp add remotify --global -- npx -y remotify-mcp@latest</pre>
+          <button class="copy" data-target="inst-opencode">Copy</button>
+        </div>
+        <p>Requires Node.js 18+ with <code>npx</code>. Registers for every project;
+          omit <code>--global</code> for the current project only.
+          Check the connection with <code>opencode mcp list</code> or <code>/mcps</code> in OpenCode.</p>
       </div>
 
       <div class="install-item">
@@ -398,6 +412,8 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
       &copy; <span id="cpyear">2026</span> <a href="https://www.online-solution.biz/" rel="noopener">Online Solution</a>
       &nbsp;&middot;&nbsp;
       Apache-2.0
+      &nbsp;&middot;&nbsp;
+      <a href="https://remotify.run/" rel="noopener">Part of Remotify</a>
     </div>
     <div>
       <a href="https://www.npmjs.com/package/remotify-mcp" rel="noopener">remotify-mcp on npm</a>

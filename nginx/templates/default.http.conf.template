@@ -17,6 +17,26 @@ gzip_min_length 1024;
 gzip_proxied any;
 gzip_types text/plain text/css text/javascript text/x-shellscript application/json application/javascript application/octet-stream;
 
+# Default server: every hostname that is not this relay's vhost, including
+# names that still resolve here after a move. All of it goes to the app,
+# which already answers retired names with the 426 endpoint-moved payload
+# ("nothing is served on this name"). The landing page and every real
+# route stay on ${DOMAIN}, so the relay no longer serves its page, or
+# anything else readable, under a hostname it does not own.
+server {
+    listen 80 default_server;
+    server_name _;
+    access_log /var/log/nginx/access.log masked;
+
+    location / {
+        include fastcgi_params;
+        fastcgi_pass  remotify_api;
+        fastcgi_param SCRIPT_FILENAME /var/www/html/index.php;
+        fastcgi_param SCRIPT_NAME     /index.php;
+        fastcgi_param REQUEST_URI     $request_uri;
+    }
+}
+
 server {
     listen 80;
     server_name ${DOMAIN};

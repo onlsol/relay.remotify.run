@@ -557,6 +557,10 @@ case "$BASE" in
   http://*) probe=$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$IPBASE/api/health" 2>/dev/null || echo 000) ;;
 esac
 if [ "$probe" = "426" ]; then
+  # The landing page belongs to DOMAIN alone. The nginx default server sends
+  # every unknown hostname to the app, so a retired name gets the same 426
+  # on / as on the API routes instead of the relay's page.
+  eq 426 "$("${CURL[@]}" -o /dev/null -w '%{http_code}' "$IPBASE/")" "426: no landing page on a retired name"
   # Session mint on the retired name answers 200 with a dead payload whose
   # message templates carry the notice, because clients render those and throw
   # error bodies away. Every template the MCP would otherwise render as a
