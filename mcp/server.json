@@ -1,0 +1,31 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.onlsol/remotify-mcp",
+  "description": "Run shell commands on remote computers with optional per-command approval, using only curl and bash.",
+  "repository": {
+    "url": "https://github.com/onlsol/relay.remotify.run",
+    "source": "github",
+    "subfolder": "mcp"
+  },
+  "version": "0.6.1",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "remotify-mcp",
+      "version": "0.6.1",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "REMOTIFY_URL",
+          "description": "Relay to talk to. Override to point at a self-hosted instance.",
+          "default": "https://relay.remotify.run"
+        },
+        {
+          "name": "REMOTIFY_KEY",
+          "description": "Reuse an existing session key instead of creating a new one on startup.",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

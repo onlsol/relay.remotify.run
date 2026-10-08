@@ -1,7 +1,8 @@
 {
   "name": "remotify-mcp",
-  "version": "0.6.0",
-  "description": "MCP client for the remotify relay. Gives any LLM (Claude Code, Cursor, Codex, Gemini, etc.) a remote_exec tool where the remote operator approves each command and output flows back - ending the chat-to-shell copy-paste loop for log grepping, service checks, and iterative diagnostics.",
+  "version": "0.6.1",
+  "description": "MCP server that lets AI assistants run shell commands on remote computers, with optional per-command approval, using only curl and bash on the remote computer.",
+  "mcpName": "io.github.onlsol/remotify-mcp",
   "type": "module",
   "bin": { "remotify-mcp": "server.js" },
   "main": "server.js",
@@ -16,7 +17,7 @@
     "name": "Online Solution",
     "url": "https://www.online-solution.biz/"
   },
-  "homepage": "https://remotify.run",
+  "homepage": "https://relay.remotify.run",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/onlsol/relay.remotify.run.git"
