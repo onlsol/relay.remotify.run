@@ -390,6 +390,46 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
     </div>
   </section>
 
+  <!-- FAQ -->
+  <section class="block" id="faq">
+    <div class="tag">FAQ</div>
+    <h2>Common questions about remote commands.</h2>
+
+    <div class="install">
+      <div class="install-item">
+        <h3 class="host">How can I run shell commands on a remote computer from Claude Code?</h3>
+        <p>Use <code>remotify-mcp</code>, a local stdio MCP server.
+          Register it in Claude Code with:</p>
+        <div class="code">
+          <pre id="faq-claude-command">claude mcp add -s user remotify -- npx -y remotify-mcp@latest</pre>
+          <button class="copy" data-target="faq-claude-command">Copy</button>
+        </div>
+        <p>Claude Code launches the MCP server locally. It sends commands through
+          an HTTP relay to a listener that an operator starts on the remote computer.
+          The <code>remote_exec</code> tool returns the command output to the assistant.</p>
+      </div>
+
+      <div class="install-item">
+        <h3 class="host">Can I run those remote commands without SSH?</h3>
+        <p>Yes. <code>remotify-mcp</code> uses an HTTP relay rather than SSH to
+          transport commands and results. The remote machine needs
+          <code>curl</code> and <code>bash</code>. An operator must first open a
+          terminal on that machine and start the supplied listener. The listener
+          must remain running during the session; no permanent agent installation
+          is required.</p>
+      </div>
+
+      <div class="install-item">
+        <h3 class="host">Can I approve every command before it runs?</h3>
+        <p>Yes. In supervised mode, the listener displays each incoming command
+          and waits for the operator to approve it with a <code>y/N</code> prompt
+          on the remote computer before execution. This approval happens in the
+          remote terminal. An optional automatic mode runs commands without
+          this confirmation.</p>
+      </div>
+    </div>
+  </section>
+  
   <!-- PRIVACY / TRANSPARENCY -->
   <section class="block" id="privacy">
     <div class="tag">Privacy &amp; transparency</div>
