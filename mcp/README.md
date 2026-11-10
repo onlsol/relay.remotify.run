@@ -1,9 +1,18 @@
 # remotify-mcp
 
-MCP server that gives any MCP-compatible host a `remote_exec` tool backed by
-a [remotify.run](https://relay.remotify.run) relay.
+MCP server that lets Claude Code and any other MCP-compatible host run shell
+commands on a remote computer without SSH. It runs on your machine as a stdio
+server and reaches the remote through an HTTP relay.
 
-Runs on **your** machine; zero cost to the relay server.
+On the remote, you start a listener by pasting a one-liner that needs only
+`curl` and `bash`. In supervised mode the listener prints each incoming
+command and waits for a y/N approval on that computer before running it; auto
+mode runs commands without asking.
+
+It exposes three tools: `remote_exec`, `remote_session_info` and
+`remote_session_reset`. It uses the free public relay at
+[relay.remotify.run](https://relay.remotify.run) by default and works the
+same against a self-hosted relay.
 
 ## Install
 

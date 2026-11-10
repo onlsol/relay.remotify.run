@@ -16,6 +16,26 @@ directory holding the pending command/result and a timestamped push history,
 purged as soon as the idle TTL lapses (default 3h) or on explicit delete.
 Session keys are 128-bit random.
 
+## MCP quick start
+
+`remotify-mcp` lets Claude Code and other MCP hosts run shell commands on a
+remote computer. It runs on your machine as a stdio MCP server and talks to
+the public relay at https://relay.remotify.run unless you point it elsewhere.
+
+Register it in Claude Code:
+
+```bash
+claude mcp add -s user remotify -- npx -y remotify-mcp@latest
+```
+
+Ask the assistant to call `remote_session_info` and show the two listener
+one-liners, then paste one on the remote. Supervised mode asks the operator
+on the remote to approve each command with y/N before it runs; auto mode
+runs commands without asking.
+
+The [MCP setup guide](mcp/README.md) covers the other hosts and pointing the
+client at a self-hosted relay.
+
 ## Architecture
 
 ```

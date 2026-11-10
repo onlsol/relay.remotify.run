@@ -176,6 +176,7 @@
       <a href="#uses">use cases</a>
       <a href="#install">MCP install</a>
       <a href="#try">try it</a>
+      <a href="#faq">faq</a>
       <a href="#privacy">privacy</a>
       <a id="source-link" href="/source" hidden>source</a>
     </div>
@@ -386,6 +387,47 @@ args    = ["-y", "remotify-mcp@latest"]</pre>
           <div class="kv"><b>Idle TTL</b><span id="ttl"></span></div>
           <div class="kv"><b>API</b><a id="api-link" href="#">/api/session/&lt;key&gt;</a></div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="block" id="faq">
+    <div class="tag">FAQ</div>
+    <h2>Common questions.</h2>
+
+    <div class="install">
+      <div class="install-item">
+        <div class="label">
+          <span class="host">How do I run shell commands on a remote computer from Claude Code?</span>
+        </div>
+        <p>Register <code>remotify-mcp</code>, a stdio MCP server that runs on your machine:</p>
+        <div class="code">
+          <pre id="faq-claude">claude mcp add -s user remotify -- npx -y remotify-mcp@latest</pre>
+          <button class="copy" data-target="faq-claude">Copy</button>
+        </div>
+        <p>Ask Claude Code to call <code>remote_session_info</code> and paste one of the
+          listener one-liners on the remote. From then on <code>remote_exec</code> sends
+          commands through the relay and returns their output to the assistant.</p>
+      </div>
+
+      <div class="install-item">
+        <div class="label">
+          <span class="host">Does it work without SSH?</span>
+        </div>
+        <p>Yes. Commands and results travel over HTTPS through the relay, so the remote
+          needs only <code>curl</code> and <code>bash</code> and no open inbound port. Someone
+          with a terminal on the remote starts the listener; it runs for the session and
+          leaves nothing installed.</p>
+      </div>
+
+      <div class="install-item">
+        <div class="label">
+          <span class="host">Can I approve every command before it runs?</span>
+        </div>
+        <p>Yes. In supervised mode the listener prints each command and waits for
+          <code>y</code> on the remote terminal before running it. Auto mode
+          (<code>?mode=auto</code>) runs commands without asking.</p>
       </div>
     </div>
   </section>

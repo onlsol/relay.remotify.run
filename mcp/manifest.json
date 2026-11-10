@@ -1,0 +1,49 @@
+{
+  "manifest_version": "0.3",
+  "name": "remotify-mcp",
+  "display_name": "Remotify",
+  "version": "0.6.3",
+  "description": "Run shell commands on remote computers with optional per-command approval, using only curl and bash.",
+  "author": {
+    "name": "Online Solution",
+    "url": "https://www.online-solution.biz/"
+  },
+  "homepage": "https://relay.remotify.run",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/onlsol/relay.remotify.run"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["remote-exec", "shell", "ssh-alternative", "remotify"],
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.js"],
+      "env": {
+        "REMOTIFY_URL": "${user_config.remotify_url}",
+        "REMOTIFY_KEY": "${user_config.remotify_key}"
+      }
+    }
+  },
+  "user_config": {
+    "remotify_url": {
+      "type": "string",
+      "title": "Relay URL",
+      "description": "Relay to talk to. Override to point at a self-hosted instance.",
+      "default": "https://relay.remotify.run",
+      "required": false
+    },
+    "remotify_key": {
+      "type": "string",
+      "title": "Session key",
+      "description": "Reuse an existing session key instead of creating a new one on startup.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "runtimes": { "node": ">=18" }
+  }
+}

@@ -806,7 +806,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         "\n  '[in-flight]' = the command IS already being executed on the remote (cmd was picked up, no output yet). In that case:" +
         "\n    1. Do NOT give up. Long operations (mongodump, restic, rsync, big installs, slow restarts) routinely take many minutes." +
         "\n    2. Call remote_exec again with the EXACT SAME arguments; the relay will return the output the moment the command finishes." +
-        "\n    3. Do NOT tell the user the listener disconnected; do NOT ask them to re-paste the listener; do NOT switch to a different command." +
+        "\n    3. The listener is still connected, so keep waiting: do NOT report a disconnect, do NOT ask the user to re-paste the listener, and do NOT switch to a different command." +
         "\n    4. There is no LLM-side retry cap on '[in-flight]'; keep waiting until the result lands or the relay returns something else." +
         "\n  '[busy]' = you tried to issue a NEW command while a previous one is still executing on the remote. Each session is single-flight (one command at a time). In that case:" +
         "\n    1. If you know the previous command, call remote_exec with ITS exact arguments first to drain its result, then issue the new one." +
@@ -823,11 +823,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['command'],
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
     {
       name: 'remote_session_info',
       description: 'Return the current relay session: key, URLs, and the exact one-liners to paste on the remote machine to start the listener (remote_quickstart = supervised, y/N per command; remote_quickstart_auto = unattended). When you show them to the user, show BOTH verbatim in a fenced code block and make them the final message of your turn.',
       inputSchema: { type: 'object', properties: {} },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     {
       name: 'remote_session_reset',
@@ -841,6 +843,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           rotate: { type: 'boolean', description: 'Mint a brand-new session key instead of clearing the current one in place (requires the user to reconnect the remote listener)' },
         },
       },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
   ],
 }));
